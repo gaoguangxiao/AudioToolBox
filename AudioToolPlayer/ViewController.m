@@ -52,28 +52,21 @@ static void CheckError(OSStatus error, const char *operation)
     [super viewDidLoad];
     // Do any additional setup after loading the view, typically from a nib.
     
-    //1、实现用AudioToolBox播放音频
-    NSString *musicPath = [[NSBundle mainBundle]pathForResource:@"几个你_薛之谦" ofType:@"aac"];
-    NSURL *url = [NSURL fileURLWithPath:musicPath];
+
     //2、判断是否能打开
-     CheckError(ExtAudioFileOpenURL((__bridge CFURLRef)url, &_audioFile),"打开文件失败");
-    _bufferList = [self allocAudioBufferListWithMDataByteSize:CONST_BUFFER_SIZE mNumberChannels:1 mNumberBuffers:1];
+//    AudioFileID audioFileId;
+//    OSStatus status = AudioFileOpenURL((__bridge CFURLRef _Nonnull)(url), kAudioFileReadPermission, 0, &audioFileId);
+//    if (status != noErr) {
+//        NSLog(@"文件读取失败");
+//    }
+
     
-    _outputFormat = [self allocAudioStreamBasicDescriptionWithMFormatID:kAudioFormatLinearPCM mFormatFlags:kLinearPCMFormatFlagIsSignedInteger mSampleRate:44100 mFramesPerPacket:1 mChannelsPerFrame:2 mBitsPerChannel:16];
-    uint size = sizeof(_outputFormat);
-    CheckError(ExtAudioFileSetProperty(_audioFile, kExtAudioFileProperty_ClientDataFormat, size, &_outputFormat), "setkExtAudioFileProperty_ClientDataFormat failure");
     
-    size = sizeof(_totalFrame);
-    CheckError(ExtAudioFileGetProperty(_audioFile,
-                                       kExtAudioFileProperty_FileLengthFrames,
-                                       &size,
-                                       &_totalFrame), "获取总帧数失败");
-    
-     _readedFrame = 0;
     
 
+
     //开始
-    [self initAudioUnitWithRate:_outputFormat.mSampleRate bit:_outputFormat.mBitsPerChannel channel:_outputFormat.mChannelsPerFrame];
+    [self initAudioUnitWithRate:44100 bit:16 channel:1];
     
     
     // 初始化
@@ -95,13 +88,13 @@ static void CheckError(OSStatus error, const char *operation)
 
 - (void)initAudioUnitWithRate:(Float64)rate bit:(UInt32)bit channel:(UInt32)channel
 {
-    //设置session
+    //1、设置session
     NSError *error = nil;
     AVAudioSession* session = [AVAudioSession sharedInstance];
-    [session setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker error:&error];
+    [session setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker error:&error];
     [session setActive:YES error:nil];
     
-    //初始化audioUnit 描述音频文件
+    //2、初始化audioUnit描述音频文件
     AudioComponentDescription outputDesc = [self allocAudioComponentDescriptionWithComponentType:kAudioUnitType_Output componentSubType:kAudioUnitSubType_VoiceProcessingIO componentFlags:0 componentFlagsMask:0];
     
     //使用AudioComponentFindNext获取AudioComponentDescription
@@ -110,22 +103,28 @@ static void CheckError(OSStatus error, const char *operation)
     //获取audio的实例
     AudioComponentInstanceNew(outputComponent, &audioUnit);
     
-    //设置输出格式
+
+    
+
+    //3、初始化 AudioBufferList
+    _bufferList = [self allocAudioBufferListWithMDataByteSize:CONST_BUFFER_SIZE mNumberChannels:1 mNumberBuffers:1];
+    
+    //4、设置输出格式
     int mFramesPerPacket = 1;
-    
     //描述音频格式
-    AudioStreamBasicDescription streamDesc = [self allocAudioStreamBasicDescriptionWithMFormatID:kAudioFormatLinearPCM mFormatFlags:(kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsNonInterleaved) mSampleRate:rate mFramesPerPacket:mFramesPerPacket mChannelsPerFrame:channel mBitsPerChannel:bit];
+    _outputFormat = [self allocAudioStreamBasicDescriptionWithMFormatID:kAudioFormatLinearPCM mFormatFlags:(kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsNonInterleaved) mSampleRate:rate mFramesPerPacket:mFramesPerPacket mChannelsPerFrame:channel mBitsPerChannel:bit];
     
-    //录制和回放开启I/O
+    AudioUnitInitialize(audioUnit);
+    //5、应用播放的音频格式描述
     OSStatus status = AudioUnitSetProperty(audioUnit,
                                            kAudioUnitProperty_StreamFormat,
                                            kAudioUnitScope_Input,
                                            kOutputBus,
-                                           &streamDesc,
-                                           sizeof(streamDesc));
+                                           &_outputFormat,
+                                           sizeof(_outputFormat));
     CheckError(status, "SetProperty StreamFormat failure");
     
-    //设置声音输出回调函数，当speraker需要数据就会调用 回调函数去获取数据，是拉数据的概念
+    //6、设置声音输出回调函数，当speraker需要数据就会调用 回调函数去获取数据，是拉数据的概念
     AURenderCallbackStruct outputCallBackStruct;
     outputCallBackStruct.inputProc = outputCallBackFun;
     outputCallBackStruct.inputProcRefCon = (__bridge void * _Nullable)(self);
@@ -137,7 +136,26 @@ static void CheckError(OSStatus error, const char *operation)
                                   sizeof(outputCallBackStruct));
     CheckError(status, "SetProperty EnableIO failure");
     
-
+    //7、录入需要播放的文件
+    //ExtAudioFile是high_level的API，提供音频的读写，是Audio File和audio conerter的结合
+    
+    NSString *musicPath = [[NSBundle mainBundle]pathForResource:@"几个你_薛之谦" ofType:@"aac"];
+    NSURL *url = [NSURL fileURLWithPath:musicPath];
+    CheckError(ExtAudioFileOpenURL((__bridge CFURLRef)url, &_audioFile),"打开文件失败");//新建一个 ExAudioFileRef，用于读取音频文件
+    uint size = sizeof(_outputFormat);
+    
+    CheckError(ExtAudioFileSetProperty(_audioFile,
+                                       kExtAudioFileProperty_ClientDataFormat,
+                                       size,
+                                       &_outputFormat), "setkExtAudioFileProperty_ClientDataFormat failure");
+    
+    size = sizeof(_totalFrame);
+    //    ExtAudioFileGetProperty 文件的长度，单位是sample frames，获取前需要先设置好输入和输出的格式；
+    CheckError(ExtAudioFileGetProperty(_audioFile,
+                                       kExtAudioFileProperty_FileLengthFrames,
+                                       &size,
+                                       &_totalFrame), "获取总帧数失败");
+    _readedFrame = 0;
 
 }
 - (AudioStreamBasicDescription)allocAudioStreamBasicDescriptionWithMFormatID:(AudioFormatID)mFormatID mFormatFlags:(AudioFormatFlags)mFormatFlags mSampleRate:(NSInteger )mSampleRate  mFramesPerPacket:(UInt32)mFramesPerPacket mChannelsPerFrame:(UInt32)mChannelsPerFrame mBitsPerChannel:(UInt32)mBitsPerChannel
@@ -160,10 +178,10 @@ static void CheckError(OSStatus error, const char *operation)
 {
     AudioBufferList *_bufferList;
     _bufferList = (AudioBufferList *)malloc(sizeof(AudioBufferList));
-    _bufferList->mNumberBuffers = 1;
+    _bufferList->mNumberBuffers = mNumberBuffers;
     _bufferList->mBuffers[0].mData = malloc(mDataByteSize);
     _bufferList->mBuffers[0].mDataByteSize = mDataByteSize;
-    _bufferList->mBuffers[0].mNumberChannels = 1;
+    _bufferList->mBuffers[0].mNumberChannels = mNumberChannels;
     return _bufferList;
 }
 /**
